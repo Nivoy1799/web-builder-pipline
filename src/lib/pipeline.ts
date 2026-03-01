@@ -2,7 +2,8 @@ import { eq } from "drizzle-orm";
 import * as prompts from "@/prompts/index";
 import { callClaude, callClaudeJSON, parseHTML, calculateCostUnits, formatCost, MODELS, type TokenUsage, type ModelId, type ProgressCallback } from "./claude";
 import { splitFiles } from "./splitFiles";
-import { scrapeWebsite, isScrapeSufficient } from "./scraper";
+import { scrapeWebsite, isScrapeSufficient, mergeWithScraped } from "./scraper";
+import { fetchUnsplashImages } from "./unsplash";
 import { db } from "./db";
 import { runs, runLogs } from "./db/schema";
 
@@ -37,6 +38,7 @@ const DEFAULT_AGENT_MODELS: Record<string, ModelId> = {
   crawler: MODELS.sonnet,
   planner: MODELS.sonnet,
   generator: MODELS.sonnet,
+  reeval: MODELS.haiku,
 };
 
 async function dbLog(
@@ -239,12 +241,12 @@ export async function runPipeline(
     await dbLog(runId, "CRAWL", `Scrape insufficient — falling back to AI crawler (${crawlerModel})...`, "info", sendEvent);
 
     const scrapedContext = scrapedFields.length > 0
-      ? `\n\nAlready scraped from site HTML (use these, don't re-derive):\n${scraped.company_name ? `Company: ${scraped.company_name}\n` : ""}${scraped.description ? `Description: ${scraped.description}\n` : ""}${scraped.industry ? `Industry: ${scraped.industry}\n` : ""}${scraped.images.logo ? `Logo URL: ${scraped.images.logo}\n` : ""}${scraped.images.hero ? `Hero image URL: ${scraped.images.hero}\n` : ""}${scraped.social_media.linkedin ? `LinkedIn: ${scraped.social_media.linkedin}\n` : ""}${scraped.social_media.twitter ? `Twitter: ${scraped.social_media.twitter}\n` : ""}${scraped.social_media.facebook ? `Facebook: ${scraped.social_media.facebook}\n` : ""}${scraped.social_media.instagram ? `Instagram: ${scraped.social_media.instagram}\n` : ""}${scraped.seo_keywords.length ? `SEO keywords: ${scraped.seo_keywords.join(", ")}\n` : ""}`
+      ? `\n\nAlready scraped from the ACTUAL site HTML (these are ground truth — do NOT override with data from other businesses):\n${scraped.company_name ? `Company: ${scraped.company_name}\n` : ""}${scraped.description ? `Description: ${scraped.description}\n` : ""}${scraped.industry ? `Industry: ${scraped.industry}\n` : ""}${scraped.location ? `Location: ${scraped.location}\n` : ""}${scraped.images.logo ? `Logo URL: ${scraped.images.logo}\n` : ""}${scraped.images.hero ? `Hero image URL: ${scraped.images.hero}\n` : ""}${scraped.social_media.linkedin ? `LinkedIn: ${scraped.social_media.linkedin}\n` : ""}${scraped.social_media.twitter ? `Twitter: ${scraped.social_media.twitter}\n` : ""}${scraped.social_media.facebook ? `Facebook: ${scraped.social_media.facebook}\n` : ""}${scraped.social_media.instagram ? `Instagram: ${scraped.social_media.instagram}\n` : ""}${scraped.seo_keywords.length ? `SEO keywords: ${scraped.seo_keywords.join(", ")}\n` : ""}`
       : "";
 
     const { result, repaired: crawlRepaired, usage: crawlUsage } = await callClaudeJSON(
       prompts.crawler,
-      `Research the company behind: ${targetUrl}\n\nSite title: "${(mergedEval.meta_info as Record<string, unknown>)?.title || "unknown"}"\nTech: ${(mergedEval.tech_stack as string[])?.join(", ") || "unknown"}\nScores — Sec: ${mergedEval.scores.security}, Code: ${mergedEval.scores.code}, Visual: ${mergedEval.scores.view}\n\nSearch broadly: website, social media, reviews, news.${scrapedContext}`,
+      `Research the company at this EXACT URL: ${targetUrl}\n\nIMPORTANT: Only return information about the business at this specific website. If there are multiple businesses with similar names, use ONLY data from ${targetUrl} and its linked social profiles. Do not mix in data from other businesses.\n\nSite title: "${(mergedEval.meta_info as Record<string, unknown>)?.title || "unknown"}"\nTech: ${(mergedEval.tech_stack as string[])?.join(", ") || "unknown"}\nScores — Sec: ${mergedEval.scores.security}, Code: ${mergedEval.scores.code}, Visual: ${mergedEval.scores.view}\n\nSearch broadly: website, social media, reviews, news.${scrapedContext}`,
       true,
       1,
       crawlerModel,
@@ -252,7 +254,9 @@ export async function runPipeline(
     );
     await trackTokens("CRAWL", crawlUsage, crawlerModel);
     if (crawlRepaired) await dbLog(runId, "ORCH", "Crawler response truncated — auto-repaired", "warn", sendEvent);
-    crawlResult = result;
+
+    // Scraped data is from the actual site — always wins over AI for fields it found
+    crawlResult = mergeWithScraped(result, scraped);
   }
 
   if (!crawlResult.company_name) {
@@ -265,6 +269,42 @@ export async function runPipeline(
   sendEvent("step", { step: "crawler", status: "done" });
   sendEvent("output", { key: "crawler", data: crawlResult });
   await dbLog(runId, "CRAWL", `Found: ${crawlResult.company_name} — ${crawlResult.industry}`, "success", sendEvent);
+
+  // ── UNSPLASH ENRICHMENT (if images missing) ────────────────────────────────
+
+  const crawlImages = crawlResult.images as Record<string, unknown> | undefined;
+  const hasHero = !!(crawlImages?.hero);
+  const hasProducts = Array.isArray(crawlImages?.products) && (crawlImages.products as string[]).filter(Boolean).length > 0;
+
+  if (!hasHero || !hasProducts) {
+    await dbLog(runId, "CRAWL", `Images missing (hero: ${hasHero}, products: ${hasProducts}) — checking Unsplash...`, "info", sendEvent);
+    const unsplash = await fetchUnsplashImages({
+      companyName: crawlResult.company_name as string,
+      industry: (crawlResult.industry as string) || "",
+      productsServices: (crawlResult.products_services as string[]) || [],
+      description: (crawlResult.description as string) || "",
+    });
+
+    if (unsplash) {
+      const imgs = { ...(crawlImages || {}) } as Record<string, unknown>;
+      // Fill gaps only — don't override existing images
+      if (!hasHero && unsplash.hero) {
+        imgs.hero = unsplash.hero;
+        await dbLog(runId, "CRAWL", `Unsplash: added hero image`, "info", sendEvent);
+      }
+      if (!hasProducts && unsplash.products.length > 0) {
+        imgs.products = unsplash.products;
+        await dbLog(runId, "CRAWL", `Unsplash: added ${unsplash.products.length} product images`, "info", sendEvent);
+      }
+      imgs.unsplash_attribution = unsplash.attribution;
+      crawlResult.images = imgs;
+      // Update DB with enriched images
+      await updateRun(runId, { crawlerOutput: crawlResult }, sendEvent);
+      await dbLog(runId, "CRAWL", `Unsplash enrichment complete (${unsplash.attribution.length} photos)`, "success", sendEvent);
+    } else {
+      await dbLog(runId, "CRAWL", `Unsplash unavailable — continuing without stock photos`, "info", sendEvent);
+    }
+  }
 
   // ── CANCELLATION CHECK 3: After crawler, before planner ──
   await checkCancelled(runId, sendEvent);
@@ -364,6 +404,11 @@ SECURITY FIXES: ${(planResult.security_fixes as string[])?.join(", ")}
 COMPANY: ${crawlResult.company_name} | ${crawlResult.industry} | ${(crawlResult.products_services as string[])?.join(", ")}
 BRAND VOICE: ${crawlResult.brand_voice || "professional"}
 VALUE PROP: ${crawlResult.value_proposition || "N/A"}
+CANONICAL URL: ${targetUrl}
+SEO KEYWORDS: ${(crawlResult.seo_keywords as string[])?.join(", ") || "N/A"}
+SOCIAL LINKS: ${Object.entries((crawlResult.social_media as Record<string, string>) ?? {}).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join(", ") || "none"}
+DESCRIPTION: ${crawlResult.description || "N/A"}
+ACCESSIBILITY: ${(planResult.accessibility_plan as string[])?.join(", ") || "WCAG 2.1 AA defaults"}
 
 IMAGES (use these exact URLs in <img> tags):
   Logo: ${images?.logo || "none — use text logo"}
@@ -373,7 +418,7 @@ IMAGES (use these exact URLs in <img> tags):
   Social cover: ${images?.social_cover || "none"}
   Additional: ${(images?.additional as string[])?.filter(Boolean)?.join(", ") || "none"}
 
-Build an AWARD-WINNING, complete, production-ready HTML document. This should look like a $30k agency build. Use the REAL images above — do not invent image URLs.`,
+Build an AWARD-WINNING, complete, production-ready HTML document. This should look like a $30k agency build. Use the REAL images above — do not invent image URLs. Include full SEO meta tags, Open Graph, Twitter Card, JSON-LD structured data, and WCAG 2.1 AA accessibility as specified in your instructions.`,
     false,
     32000,
     generatorModel,
@@ -394,7 +439,83 @@ Build an AWARD-WINNING, complete, production-ready HTML document. This should lo
   sendEvent("output", { key: "generator", data: { length: html.length } });
   await dbLog(runId, "GEN", `Generated ${html.length.toLocaleString()} chars of HTML`, "success", sendEvent);
 
-  // ── PHASE 5: SPLIT FILES + FINALIZE ──────────────────────────────────────
+  // ── CANCELLATION CHECK 5: After generator, before reeval ──
+  await checkCancelled(runId, sendEvent);
+
+  // ── PHASE 5: RE-EVALUATION ────────────────────────────────────────────────
+
+  const reevalModel = agentModels.reeval ?? MODELS.haiku;
+  await dbLog(runId, "ORCH", "Phase 5: Re-evaluating generated HTML (3 agents)", "info", sendEvent);
+  await updateRun(runId, { currentStep: "reeval" }, sendEvent);
+  sendEvent("step", { step: "reeval", status: "running" });
+
+  const htmlForReeval = html.slice(0, 60_000);
+
+  const runReEvalAgent = async (
+    label: string,
+    logKey: string,
+    prompt: string,
+  ): Promise<Record<string, unknown> | null> => {
+    try {
+      await dbLog(runId, logKey, `Re-eval ${label}: analyzing generated HTML (${reevalModel})...`, "info", sendEvent);
+      const { result, usage } = await callClaudeJSON(
+        prompt,
+        `Analyze this HTML source code:\n\n${htmlForReeval}`,
+        false,
+        1,
+        reevalModel,
+        ({ chars, outputTokens }) => sendEvent("progress", { step: "reeval", chars, outputTokens })
+      );
+      await trackTokens(logKey, usage, reevalModel);
+      await dbLog(runId, logKey, `Re-eval ${label} score: ${(result as Record<string, unknown>).overall_score}/100`, "success", sendEvent);
+      return result;
+    } catch (err) {
+      await dbLog(runId, logKey, `Re-eval ${label} failed: ${err instanceof Error ? err.message : err}`, "error", sendEvent);
+      return null;
+    }
+  };
+
+  const [secReeval, codeReeval, viewReeval] = await Promise.all([
+    runReEvalAgent("Security", "REEVAL", prompts.securityReeval),
+    runReEvalAgent("Code", "REEVAL", prompts.codeReeval),
+    runReEvalAgent("View", "REEVAL", prompts.viewReeval),
+  ]);
+
+  const reevalSuccess = [secReeval, codeReeval, viewReeval].filter(Boolean).length;
+  if (reevalSuccess > 0) {
+    const secAfter = (secReeval?.overall_score as number) ?? null;
+    const codeAfter = (codeReeval?.overall_score as number) ?? null;
+    const viewAfter = (viewReeval?.overall_score as number) ?? null;
+    const afterScores = [secAfter, codeAfter, viewAfter].filter((s): s is number => s != null);
+    const overallAfter = afterScores.length > 0 ? Math.round(afterScores.reduce((a, b) => a + b, 0) / afterScores.length) : null;
+
+    const reEvalOutput = {
+      security_after: secReeval,
+      code_after: codeReeval,
+      view_after: viewReeval,
+      scores_after: {
+        security: secAfter,
+        code: codeAfter,
+        view: viewAfter,
+      },
+      overall_after: overallAfter,
+      improvement: overallAfter != null ? overallAfter - overallScore : null,
+    };
+
+    await updateRun(runId, { reEvalOutput }, sendEvent);
+    sendEvent("output", { key: "reeval", data: reEvalOutput });
+    await dbLog(
+      runId, "ORCH",
+      `Re-eval: ${overallAfter}/100 (before: ${overallScore}) ${overallAfter != null ? (overallAfter >= overallScore ? `+${overallAfter - overallScore}` : `${overallAfter - overallScore}`) : ""}`,
+      "success", sendEvent
+    );
+  } else {
+    await dbLog(runId, "ORCH", "Re-eval: all agents failed — skipping", "warn", sendEvent);
+  }
+
+  sendEvent("step", { step: "reeval", status: "done" });
+
+  // ── PHASE 6: SPLIT FILES + FINALIZE ──────────────────────────────────────
 
   const { files } = splitFiles(html);
   const fileCount = Object.keys(files).length;

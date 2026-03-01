@@ -30,6 +30,7 @@ interface PipelineViewProps {
     crawlerOutput?: unknown;
     plannerOutput?: unknown;
     generatedHtml?: string | null;
+    reEvalOutput?: unknown;
     files?: Record<string, string> | null;
     scoreOverall?: number | null;
     totalInputTokens?: number;
@@ -62,6 +63,7 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
       if (initialRun.crawlerOutput) s.crawler = "done";
       if (initialRun.plannerOutput) s.planner = "done";
       if (initialRun.generatedHtml) s.generator = "done";
+      if (initialRun.reEvalOutput) s.reeval = "done";
       // Mark current step as running (parallel eval agents share "security" step)
       if (initialRun.status === "running" && initialRun.currentStep) {
         const step = initialRun.currentStep as PipelineStep;
@@ -87,6 +89,7 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
     if (initialRun.crawlerOutput) o.crawler = initialRun.crawlerOutput;
     if (initialRun.plannerOutput) o.planner = initialRun.plannerOutput;
     if (initialRun.generatedHtml) o.generator = initialRun.generatedHtml;
+    if (initialRun.reEvalOutput) o.reeval = initialRun.reEvalOutput;
     return o;
   };
 
@@ -187,6 +190,7 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
       if (d.crawlerOutput) s.crawler = "done";
       if (d.plannerOutput) s.planner = "done";
       if (d.generatedHtml) s.generator = "done";
+      if (d.reEvalOutput) s.reeval = "done";
       if (d.status === "running" && d.currentStep) {
         const step = d.currentStep as PipelineStep;
         if (step === "security") {
@@ -206,6 +210,7 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
       if (d.mergedOutput) o.merged = d.mergedOutput;
       if (d.crawlerOutput) o.crawler = d.crawlerOutput;
       if (d.plannerOutput) o.planner = d.plannerOutput;
+      if (d.reEvalOutput) o.reeval = d.reEvalOutput;
       setOutputs((prev) => ({ ...prev, ...o }));
       // Update tokens
       if (d.totalTokens > 0) {
@@ -352,6 +357,7 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
   const crawler = outputs.crawler as Record<string, unknown> | undefined;
   const planner = outputs.planner as Record<string, unknown> | undefined;
   const gen = outputs.generator;
+  const reeval = outputs.reeval as Record<string, unknown> | undefined;
 
   return (
     <div style={{ maxWidth: 1100, margin: "0 auto", padding: "28px 20px 60px" }}>
@@ -363,7 +369,7 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
             background: "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(139,92,246,0.12))",
             display: "flex", alignItems: "center", justifyContent: "center",
             fontSize: 10, fontWeight: 700, fontFamily: "var(--mono)", color: "rgba(255,255,255,0.45)", letterSpacing: 1,
-          }}>6×AI</div>
+          }}>9×AI</div>
           <div>
             <h1 style={{ margin: 0, fontSize: 17, fontWeight: 700, letterSpacing: -0.3 }}>Website Pipeline</h1>
             <p style={{ margin: 0, fontSize: 9, color: "rgba(255,255,255,0.2)", letterSpacing: 2, textTransform: "uppercase", fontFamily: "var(--mono)" }}>
@@ -444,6 +450,8 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
           <PipelineStepUI label="Planner" icon="✎" color="#8b5cf6" status={statuses.planner} progress={progress.planner} />
           <Arrow active={statuses.planner === "done"} />
           <PipelineStepUI label="Generator" icon="🔨" color="#22c55e" status={statuses.generator} isWide progress={progress.generator} />
+          <Arrow active={statuses.generator === "done"} />
+          <PipelineStepUI label="Re-eval" icon="⟲" color="#06b6d4" status={statuses.reeval} progress={progress.reeval} />
         </div>
       </div>
 
@@ -561,13 +569,73 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
               </div>
             )}
             {gen != null && (
-              <div>
+              <div style={{ marginBottom: 8 }}>
                 <div style={{ fontSize: 10, fontWeight: 600, color: "#22c55e", padding: "4px 0" }}>
                   🔨 Generated — {typeof gen === "string" ? gen.length.toLocaleString() : String((gen as Record<string, unknown>)?.length)} chars
                 </div>
                 <DataPreview label="HTML Source" data={typeof gen === "string" ? gen : `${String((gen as Record<string, unknown>)?.length)} chars`} color="#22c55e" />
               </div>
             )}
+            {reeval != null && merged != null && (() => {
+              const scoresBefore = merged.scores as Record<string, number> | undefined;
+              const scoresAfter = reeval.scores_after as Record<string, number | null> | undefined;
+              const overallBefore = merged.overall_score as number;
+              const overallAfter = reeval.overall_after as number | null;
+              const improvement = reeval.improvement as number | null;
+              const categories = [
+                { key: "security", label: "Security", icon: "🛡", color: "#ef4444" },
+                { key: "code", label: "Code", icon: "⚙", color: "#f59e0b" },
+                { key: "view", label: "Visual", icon: "◈", color: "#3b82f6" },
+              ];
+              return (
+                <div style={{ padding: "10px 12px", background: "rgba(6,182,212,0.04)", borderRadius: 8, border: "1px solid rgba(6,182,212,0.12)" }}>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: "#06b6d4", marginBottom: 8, display: "flex", alignItems: "center", gap: 4 }}>
+                    <span>⟲</span> Re-evaluation — Before vs After
+                    {improvement != null && (
+                      <span style={{
+                        marginLeft: "auto", fontSize: 11, fontWeight: 700,
+                        color: improvement >= 0 ? "#22c55e" : "#ef4444",
+                      }}>
+                        {improvement >= 0 ? "+" : ""}{improvement} pts
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 8, color: "rgba(255,255,255,0.25)", marginBottom: 2, fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: 1 }}>Before</div>
+                      <ScoreRing score={overallBefore} size={44} />
+                    </div>
+                    <div style={{ fontSize: 14, color: "rgba(255,255,255,0.15)" }}>→</div>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 8, color: "rgba(255,255,255,0.25)", marginBottom: 2, fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: 1 }}>After</div>
+                      <ScoreRing score={overallAfter ?? 0} size={44} />
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {categories.map(({ key, label, icon, color }) => {
+                      const before = scoresBefore?.[key] ?? 0;
+                      const after = scoresAfter?.[key] ?? null;
+                      const delta = after != null ? after - before : null;
+                      return (
+                        <div key={key} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontFamily: "var(--mono)" }}>
+                          <span style={{ color, width: 14 }}>{icon}</span>
+                          <span style={{ color: "rgba(255,255,255,0.4)", width: 52 }}>{label}</span>
+                          <span style={{ color: "rgba(255,255,255,0.25)", width: 22, textAlign: "right" }}>{before}</span>
+                          <span style={{ color: "rgba(255,255,255,0.12)", fontSize: 9 }}>→</span>
+                          <span style={{ color: "rgba(255,255,255,0.5)", width: 22, textAlign: "right", fontWeight: 600 }}>{after ?? "—"}</span>
+                          {delta != null && (
+                            <span style={{ color: delta >= 0 ? "#22c55e" : "#ef4444", fontWeight: 600, fontSize: 9 }}>
+                              {delta >= 0 ? "+" : ""}{delta}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <DataPreview label="Full Re-eval Report" data={reeval} color="#06b6d4" />
+                </div>
+              );
+            })()}
           </div>
         </div>
       </div>

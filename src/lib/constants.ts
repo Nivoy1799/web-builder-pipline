@@ -63,6 +63,7 @@ export const PIPELINE_STEPS = [
   "crawler",
   "planner",
   "generator",
+  "reeval",
 ] as const;
 
 export type PipelineStep = (typeof PIPELINE_STEPS)[number];
@@ -82,4 +83,5 @@ export const AGENT_COLORS: Record<string, string> = {
   CRAWL: "#a78bfa",
   PLAN: "#8b5cf6",
   GEN: "#22c55e",
+  REEVAL: "#06b6d4",
 };

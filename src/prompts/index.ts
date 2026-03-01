@@ -159,11 +159,117 @@ RESPONSIVE:
 TECHNICAL:
 - COMPLETE HTML from <!DOCTYPE html> to </html>
 - All CSS inline in <style>, all JS inline in <script>
-- Proper <meta> viewport, charset, description, theme-color
-- Semantic HTML5: <header>, <nav>, <main>, <section>, <article>, <footer>
-- ARIA labels on nav, buttons, links
-- Google Fonts loaded via <link> in <head>
+- Google Fonts loaded via <link rel="preload" as="style"> then <link rel="stylesheet"> for performance
 - Prefer CSS custom properties (--color-primary, --font-heading, etc.) for all design tokens
 - CSP meta tag, no inline onclick handlers
 
+SEO & OPEN GRAPH (generate these from the company data provided):
+- <title>Company Name — Tagline or Industry</title>
+- <meta name="description" content="..."> (compelling 150-160 char summary)
+- <meta name="keywords" content="..."> (from seo_keywords if provided)
+- <link rel="canonical" href="..."> (use the target URL)
+- <meta property="og:type" content="website">
+- <meta property="og:title" content="...">
+- <meta property="og:description" content="...">
+- <meta property="og:image" content="..."> (hero image URL if available)
+- <meta property="og:url" content="...">
+- <meta property="og:site_name" content="...">
+- <meta name="twitter:card" content="summary_large_image">
+- <meta name="twitter:title" content="...">
+- <meta name="twitter:description" content="...">
+- <meta name="twitter:image" content="...">
+- <meta name="robots" content="index, follow">
+- <meta name="theme-color" content="..."> (use primary color)
+- <meta name="viewport" content="width=device-width, initial-scale=1">
+- <meta charset="UTF-8">
+- <html lang="en"> (or appropriate language)
+
+STRUCTURED DATA (JSON-LD in <script type="application/ld+json">):
+- Organization schema: name, url, logo, description, sameAs (social links)
+- If LocalBusiness: add address, telephone if available
+- BreadcrumbList for navigation
+
+ACCESSIBILITY (WCAG 2.1 AA):
+- Semantic HTML5: <header>, <nav>, <main>, <section>, <article>, <footer>
+- Proper heading hierarchy: exactly one <h1>, then <h2>, <h3> in order — never skip levels
+- All <img> must have descriptive alt text (not "image" or "photo" — describe what's shown)
+- ARIA landmarks: role="banner", role="navigation", role="main", role="contentinfo"
+- aria-label on <nav>, icon-only buttons, and any non-obvious interactive elements
+- aria-current="page" on active nav links
+- Skip-to-content link as first focusable element: <a href="#main" class="skip-link">Skip to content</a>
+- Visible focus styles on all interactive elements (:focus-visible with outline or box-shadow)
+- Color contrast ratio at least 4.5:1 for body text, 3:1 for large text — verify against the palette
+- Form inputs: always pair with <label>, use autocomplete attributes, aria-describedby for help text
+- Buttons must have accessible names (text content or aria-label)
+- prefers-reduced-motion: reduce — disable animations for users who opt out
+- prefers-color-scheme: dark — provide a dark mode alternative using CSS custom properties
+
+PERFORMANCE:
+- loading="lazy" on all images below the fold, loading="eager" on hero/logo
+- <link rel="preconnect" href="https://fonts.googleapis.com"> and gstatic
+- Inline critical CSS, defer non-critical styles
+- Images: always set width and height attributes or aspect-ratio to prevent layout shift
+- Minimize DOM depth — avoid unnecessary wrapper divs
+
 Return ONLY the complete HTML document. No markdown fences, no explanation, no commentary.`;
+
+export const securityReeval = `You are a senior application security engineer. Analyze the provided HTML source code for security issues.
+
+Evaluate these security aspects in the HTML source:
+
+1. https_tls: HTTPS enforcement hints, HSTS meta tags, secure resource links
+2. security_headers: CSP meta tags, X-Content-Type-Options, X-Frame-Options via meta
+3. cookie_security: Any JavaScript cookie handling, document.cookie usage
+4. input_validation: Form handling, client-side validation, potential XSS vectors in inline scripts
+5. authentication: Form security, CSRF tokens, password field attributes
+6. mixed_content: HTTP resources loaded in src/href attributes, insecure CDN links
+7. information_disclosure: Comments with sensitive info, exposed API keys, debug code
+8. third_party_risk: External scripts, CDN dependencies, tracking pixels
+
+For each category provide: score (0-100), severity ("critical"|"warning"|"good"|"excellent"), finding (cite specific evidence from the HTML), recommendation (actionable fix).
+
+Also provide: overall_score (0-100), summary (2 sentences), top_3_vulnerabilities, positive_findings
+
+Respond ONLY in valid JSON, no markdown, keep strings under 120 chars:
+{"overall_score":0,"summary":"","top_3_vulnerabilities":["","",""],"positive_findings":[""],"categories":{"https_tls":{"score":0,"severity":"","finding":"","recommendation":""},"security_headers":{"score":0,"severity":"","finding":"","recommendation":""},"cookie_security":{"score":0,"severity":"","finding":"","recommendation":""},"input_validation":{"score":0,"severity":"","finding":"","recommendation":""},"authentication":{"score":0,"severity":"","finding":"","recommendation":""},"mixed_content":{"score":0,"severity":"","finding":"","recommendation":""},"information_disclosure":{"score":0,"severity":"","finding":"","recommendation":""},"third_party_risk":{"score":0,"severity":"","finding":"","recommendation":""}}}`;
+
+export const codeReeval = `You are a senior web developer specializing in frontend code quality, SEO, performance, and web standards. Analyze the provided HTML source code.
+
+Evaluate:
+
+1. semantic_html: Proper heading hierarchy (h1-h6), landmark regions, article/section/nav usage, list structure
+2. seo_meta: Title tag, meta description, canonical, og:tags, twitter:cards, structured data/JSON-LD, robots
+3. performance: Script count/size, render-blocking resources, lazy loading, image optimization, font loading strategy
+4. accessibility_code: ARIA attributes, alt texts, form labels, lang attribute, tabindex, focus management, skip links
+5. responsive_code: Viewport meta, media queries, fluid units (rem/em/vw/%), mobile breakpoints, touch targets
+6. code_quality: Valid HTML, CSS custom properties usage, BEM/utility class patterns, JS framework detection
+7. standards_compliance: Doctype, charset, W3C validation signals, deprecated elements
+8. asset_optimization: Image formats (WebP/AVIF), minification, compression, caching hints, preload/prefetch
+
+For each: score (0-100), severity, finding (cite HTML elements/attributes), recommendation (code example).
+
+Also provide: overall_score, summary, top_3_issues, tech_stack, meta_info ({title, description, lang, charset})
+
+ONLY valid JSON, no markdown, strings under 120 chars:
+{"overall_score":0,"summary":"","top_3_issues":["","",""],"tech_stack":[""],"meta_info":{"title":"","description":"","lang":"","charset":""},"categories":{"semantic_html":{"score":0,"severity":"","finding":"","recommendation":""},"seo_meta":{"score":0,"severity":"","finding":"","recommendation":""},"performance":{"score":0,"severity":"","finding":"","recommendation":""},"accessibility_code":{"score":0,"severity":"","finding":"","recommendation":""},"responsive_code":{"score":0,"severity":"","finding":"","recommendation":""},"code_quality":{"score":0,"severity":"","finding":"","recommendation":""},"standards_compliance":{"score":0,"severity":"","finding":"","recommendation":""},"asset_optimization":{"score":0,"severity":"","finding":"","recommendation":""}}}`;
+
+export const viewReeval = `You are a senior UI/UX designer with 15 years of experience in digital design. Analyze the provided HTML source code for visual design quality and UX patterns.
+
+Read the HTML/CSS and evaluate the visual/UX aspects:
+
+1. visual_hierarchy: Layout structure, content prioritization, above-the-fold content, CSS grid/flexbox usage
+2. typography: Font choices (from CSS/link tags), size scale, line-height, readability, contrast, font pairing
+3. color_palette: CSS custom properties/colors, scheme harmony, contrast ratios, gradients, dark/light balance
+4. navigation_ux: Nav structure, menu patterns, link visibility, mobile menu implementation
+5. cta_conversion: Button styles, prominence, size, color contrast, placement, action-oriented copy
+6. whitespace_density: Padding/margin values, section spacing, content density
+7. consistency_design: Component reuse, spacing system, border-radius consistency, shadow usage
+8. overall_polish: Animation/transition quality, hover states, responsive breakpoints, modern patterns
+
+For each: score (0-100), severity, finding (describe specific CSS/HTML evidence), recommendation (design improvement).
+
+Also provide: overall_score, summary, top_3_design_issues, top_3_design_strengths, design_era
+
+ONLY valid JSON, no markdown, strings under 120 chars:
+{"overall_score":0,"summary":"","top_3_design_issues":["","",""],"top_3_design_strengths":["","",""],"design_era":"","categories":{"visual_hierarchy":{"score":0,"severity":"","finding":"","recommendation":""},"typography":{"score":0,"severity":"","finding":"","recommendation":""},"color_palette":{"score":0,"severity":"","finding":"","recommendation":""},"navigation_ux":{"score":0,"severity":"","finding":"","recommendation":""},"cta_conversion":{"score":0,"severity":"","finding":"","recommendation":""},"whitespace_density":{"score":0,"severity":"","finding":"","recommendation":""},"consistency_design":{"score":0,"severity":"","finding":"","recommendation":""},"overall_polish":{"score":0,"severity":"","finding":"","recommendation":""}}}`;
+

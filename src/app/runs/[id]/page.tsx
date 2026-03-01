@@ -34,6 +34,7 @@ export default async function RunPage({
     crawlerOutput: run.crawlerOutput,
     plannerOutput: run.plannerOutput,
     generatedHtml: run.generatedHtml,
+    reEvalOutput: run.reEvalOutput,
     files: run.files as Record<string, string> | null,
     scoreOverall: run.scoreOverall,
     totalInputTokens: run.totalInputTokens,

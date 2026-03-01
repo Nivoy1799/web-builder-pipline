@@ -29,6 +29,7 @@ export const runs = pgTable("runs", {
   crawlerOutput: jsonb("crawler_output"),
   plannerOutput: jsonb("planner_output"),
   generatedHtml: text("generated_html"),
+  reEvalOutput: jsonb("reeval_output"),
   files: jsonb("files"),
   scoreOverall: integer("score_overall"),
   totalInputTokens: integer("total_input_tokens").notNull().default(0),

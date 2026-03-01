@@ -69,6 +69,7 @@ export async function GET(
               crawlerOutput: latest.crawlerOutput,
               plannerOutput: latest.plannerOutput,
               generatedHtml: !!latest.generatedHtml,
+              reEvalOutput: latest.reEvalOutput,
               scoreOverall: latest.scoreOverall,
               totalInputTokens: latest.totalInputTokens,
               totalOutputTokens: latest.totalOutputTokens,
