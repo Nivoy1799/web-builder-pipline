@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import * as prompts from "@/prompts/index";
 import { callClaude, callClaudeJSON, parseHTML, calculateCostUnits, formatCost, MODELS, type TokenUsage, type ModelId, type ProgressCallback } from "./claude";
 import { splitFiles } from "./splitFiles";
+import { scrapeWebsite, isScrapeSufficient } from "./scraper";
 import { db } from "./db";
 import { runs, runLogs } from "./db/schema";
 
@@ -203,24 +204,57 @@ export async function runPipeline(
   // ── CANCELLATION CHECK 2: After merge, before crawler ──
   await checkCancelled(runId, sendEvent);
 
-  // ── PHASE 2: CRAWLER ─────────────────────────────────────────────────────
+  // ── PHASE 2: CRAWLER (scrape-first, AI fallback) ─────────────────────────
 
   const crawlerModel = agentModels.crawler ?? MODELS.sonnet;
   await dbLog(runId, "ORCH", "Phase 2: Starting Crawler", "info", sendEvent);
   await updateRun(runId, { currentStep: "crawler" }, sendEvent);
   sendEvent("step", { step: "crawler", status: "running" });
-  await dbLog(runId, "CRAWL", `Researching company behind ${targetUrl} (${crawlerModel})...`, "info", sendEvent);
 
-  const { result: crawlResult, repaired: crawlRepaired, usage: crawlUsage } = await callClaudeJSON(
-    prompts.crawler,
-    `Research the company behind: ${targetUrl}\n\nSite title: "${(mergedEval.meta_info as Record<string, unknown>)?.title || "unknown"}"\nTech: ${(mergedEval.tech_stack as string[])?.join(", ") || "unknown"}\nScores — Sec: ${mergedEval.scores.security}, Code: ${mergedEval.scores.code}, Visual: ${mergedEval.scores.view}\n\nSearch broadly: website, social media, reviews, news.`,
-    true,
-    1,
-    crawlerModel,
-    ({ chars, outputTokens }) => sendEvent("progress", { step: "crawler", chars, outputTokens })
-  );
-  await trackTokens("CRAWL", crawlUsage, crawlerModel);
-  if (crawlRepaired) await dbLog(runId, "ORCH", "Crawler response truncated — auto-repaired", "warn", sendEvent);
+  // Step 1: Scrape the target URL (free, fast)
+  await dbLog(runId, "CRAWL", `Scraping ${targetUrl} for meta/OG/JSON-LD data...`, "info", sendEvent);
+  const scraped = await scrapeWebsite(targetUrl);
+
+  const scrapedFields = [
+    scraped.company_name && "name",
+    scraped.description && "description",
+    scraped.industry && "industry",
+    scraped.images.logo && "logo",
+    scraped.images.hero && "hero",
+    scraped.social_media.linkedin && "linkedin",
+    scraped.social_media.twitter && "twitter",
+  ].filter(Boolean);
+  await dbLog(runId, "CRAWL", `Scraped: found ${scrapedFields.length} fields (${scrapedFields.join(", ")})`, "info", sendEvent);
+  sendEvent("progress", { step: "crawler", scraped: scrapedFields });
+
+  let crawlResult: Record<string, unknown>;
+
+  // Step 2: Check if scraped data is sufficient
+  if (isScrapeSufficient(scraped)) {
+    // Sufficient — use scraped data directly, skip AI crawler ($0 cost)
+    crawlResult = scraped as unknown as Record<string, unknown>;
+    await dbLog(runId, "CRAWL", `Scrape sufficient — skipping AI crawler (saved ~$0.02)`, "success", sendEvent);
+  } else {
+    // Insufficient — fall back to AI crawler, pass scraped data as context
+    await dbLog(runId, "CRAWL", `Scrape insufficient — falling back to AI crawler (${crawlerModel})...`, "info", sendEvent);
+
+    const scrapedContext = scrapedFields.length > 0
+      ? `\n\nAlready scraped from site HTML (use these, don't re-derive):\n${scraped.company_name ? `Company: ${scraped.company_name}\n` : ""}${scraped.description ? `Description: ${scraped.description}\n` : ""}${scraped.industry ? `Industry: ${scraped.industry}\n` : ""}${scraped.images.logo ? `Logo URL: ${scraped.images.logo}\n` : ""}${scraped.images.hero ? `Hero image URL: ${scraped.images.hero}\n` : ""}${scraped.social_media.linkedin ? `LinkedIn: ${scraped.social_media.linkedin}\n` : ""}${scraped.social_media.twitter ? `Twitter: ${scraped.social_media.twitter}\n` : ""}${scraped.social_media.facebook ? `Facebook: ${scraped.social_media.facebook}\n` : ""}${scraped.social_media.instagram ? `Instagram: ${scraped.social_media.instagram}\n` : ""}${scraped.seo_keywords.length ? `SEO keywords: ${scraped.seo_keywords.join(", ")}\n` : ""}`
+      : "";
+
+    const { result, repaired: crawlRepaired, usage: crawlUsage } = await callClaudeJSON(
+      prompts.crawler,
+      `Research the company behind: ${targetUrl}\n\nSite title: "${(mergedEval.meta_info as Record<string, unknown>)?.title || "unknown"}"\nTech: ${(mergedEval.tech_stack as string[])?.join(", ") || "unknown"}\nScores — Sec: ${mergedEval.scores.security}, Code: ${mergedEval.scores.code}, Visual: ${mergedEval.scores.view}\n\nSearch broadly: website, social media, reviews, news.${scrapedContext}`,
+      true,
+      1,
+      crawlerModel,
+      ({ chars, outputTokens }) => sendEvent("progress", { step: "crawler", chars, outputTokens })
+    );
+    await trackTokens("CRAWL", crawlUsage, crawlerModel);
+    if (crawlRepaired) await dbLog(runId, "ORCH", "Crawler response truncated — auto-repaired", "warn", sendEvent);
+    crawlResult = result;
+  }
+
   if (!crawlResult.company_name) {
     await updateRun(runId, { status: "failed", error: "Crawler could not identify the company" }, sendEvent);
     sendEvent("error", { message: "Crawler could not identify the company" });
