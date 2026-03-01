@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { runs } from "@/lib/db/schema";
 import { desc } from "drizzle-orm";
 import Link from "next/link";
+import { DeleteRunButton } from "@/components/DeleteRunButton";
 
 function scoreColor(s: number) {
   if (s >= 80) return "#22c55e";
@@ -16,6 +17,7 @@ function statusBadge(status: string) {
     running: { bg: "rgba(59,130,246,0.12)", c: "#3b82f6" },
     completed: { bg: "rgba(34,197,94,0.12)", c: "#22c55e" },
     failed: { bg: "rgba(239,68,68,0.12)", c: "#ef4444" },
+    cancelled: { bg: "rgba(234,179,8,0.12)", c: "#eab308" },
   };
   const s = colors[status] || colors.pending;
   return (
@@ -142,8 +144,11 @@ export default async function RunsPage() {
                 </span>
               )}
 
-              <span style={{ marginLeft: "auto", fontSize: 9, fontFamily: "var(--mono)", color: "rgba(255,255,255,0.12)" }}>
-                {relativeTime(run.createdAt)}
+              <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+                <DeleteRunButton runId={run.id} />
+                <span style={{ fontSize: 9, fontFamily: "var(--mono)", color: "rgba(255,255,255,0.12)" }}>
+                  {relativeTime(run.createdAt)}
+                </span>
               </span>
             </Link>
           ))}

@@ -20,7 +20,7 @@ export async function GET(
   const encoder = new TextEncoder();
 
   // If already completed or failed, send current state and close
-  if (run.status === "completed" || run.status === "failed") {
+  if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") {
     const stream = new ReadableStream({
       start(controller) {
         controller.enqueue(

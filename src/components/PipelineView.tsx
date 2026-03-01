@@ -42,7 +42,7 @@ interface PipelineViewProps {
 
 export function PipelineView({ runId, initialRun }: PipelineViewProps) {
   const router = useRouter();
-  const isAlreadyDone = initialRun.status === "completed" || initialRun.status === "failed";
+  const isAlreadyDone = initialRun.status === "completed" || initialRun.status === "failed" || initialRun.status === "cancelled";
 
   // Build initial state from DB data
   const buildInitialStatuses = (): Record<PipelineStep, StepStatus> => {
@@ -51,7 +51,7 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
         Object.keys(INITIAL_STATUSES).map((k) => [k, "done"])
       ) as Record<PipelineStep, StepStatus>;
     }
-    if (initialRun.status === "failed") {
+    if (initialRun.status === "failed" || initialRun.status === "cancelled") {
       const s = { ...INITIAL_STATUSES };
       // Mark steps with data as done
       if (initialRun.securityOutput) s.security = "done";
@@ -92,7 +92,9 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
   const [logs, setLogs] = useState<LogItem[]>(buildInitialLogs);
   const [running, setRunning] = useState(!isAlreadyDone);
   const [done, setDone] = useState(initialRun.status === "completed");
+  const [cancelled, setCancelled] = useState(initialRun.status === "cancelled");
   const [error, setError] = useState<string | null>(initialRun.error || null);
+  const [cancelling, setCancelling] = useState(false);
   const [showPreview, setShowPreview] = useState(isAlreadyDone && !!initialRun.generatedHtml);
   const [origIframeFailed, setOrigIframeFailed] = useState(false);
   const [tokens, setTokens] = useState({
@@ -150,10 +152,19 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
       });
     });
 
+    es.addEventListener("cancelled", () => {
+      setCancelled(true);
+      setRunning(false);
+    });
+
     es.addEventListener("status", (e) => {
       const d = JSON.parse(e.data);
       if (d.status === "failed") {
         setError(d.error || "Pipeline failed");
+        setRunning(false);
+      }
+      if (d.status === "cancelled") {
+        setCancelled(true);
         setRunning(false);
       }
     });
@@ -285,10 +296,49 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
           <a href="/runs" style={{ padding: "4px 10px", borderRadius: 5, border: "1px solid rgba(255,255,255,0.06)", background: "transparent", color: "rgba(255,255,255,0.25)", fontSize: 10, fontWeight: 600, fontFamily: "var(--mono)", cursor: "pointer", textDecoration: "none" }}>
             All Runs
           </a>
+          {running && (
+            <button
+              disabled={cancelling}
+              onClick={async () => {
+                setCancelling(true);
+                try {
+                  await fetch(`/api/runs/${runId}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "cancel" }),
+                  });
+                } catch { /* ignore */ }
+              }}
+              style={{
+                padding: "4px 10px", borderRadius: 5, border: "1px solid rgba(239,68,68,0.2)",
+                background: "rgba(239,68,68,0.08)", color: "#ef4444", fontSize: 10, fontWeight: 600,
+                fontFamily: "var(--mono)", cursor: cancelling ? "not-allowed" : "pointer", opacity: cancelling ? 0.5 : 1,
+              }}
+            >
+              {cancelling ? "Cancelling..." : "Cancel"}
+            </button>
+          )}
+          {!running && (
+            <button
+              onClick={async () => {
+                if (!confirm("Delete this run? This cannot be undone.")) return;
+                await fetch(`/api/runs/${runId}`, { method: "DELETE" });
+                router.push("/runs");
+              }}
+              style={{
+                padding: "4px 10px", borderRadius: 5, border: "1px solid rgba(239,68,68,0.15)",
+                background: "transparent", color: "rgba(239,68,68,0.5)", fontSize: 10, fontWeight: 600,
+                fontFamily: "var(--mono)", cursor: "pointer",
+              }}
+            >
+              Delete
+            </button>
+          )}
           <div style={{ fontSize: 10, fontFamily: "var(--mono)", color: "rgba(255,255,255,0.12)" }}>
             {running && <span style={{ animation: "pulse 1.2s infinite", color: "#3b82f6" }}>● RUNNING</span>}
             {done && <span style={{ color: "#22c55e" }}>● COMPLETE</span>}
-            {error && !running && <span style={{ color: "#ef4444" }}>● ERROR</span>}
+            {cancelled && !running && <span style={{ color: "#eab308" }}>● CANCELLED</span>}
+            {error && !running && !cancelled && <span style={{ color: "#ef4444" }}>● ERROR</span>}
           </div>
         </div>
       </div>
@@ -501,7 +551,17 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
         </div>
       )}
 
-      {error && !running && (
+      {cancelled && !running && (
+        <div style={{ marginTop: 12, padding: "12px 16px", borderRadius: 8, background: "rgba(234,179,8,0.05)", border: "1px solid rgba(234,179,8,0.15)", display: "flex", gap: 10, animation: "fadeIn 0.3s ease" }}>
+          <span style={{ color: "#eab308" }}>⊘</span>
+          <div>
+            <p style={{ fontSize: 12, color: "#eab308", margin: 0, fontWeight: 500 }}>Pipeline was cancelled</p>
+            <p style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", margin: "3px 0 0" }}>Partial results have been preserved above.</p>
+          </div>
+        </div>
+      )}
+
+      {error && !running && !cancelled && (
         <div style={{ marginTop: 12, padding: "12px 16px", borderRadius: 8, background: "rgba(239,68,68,0.05)", border: "1px solid rgba(239,68,68,0.12)", display: "flex", gap: 10, animation: "fadeIn 0.3s ease" }}>
           <span>⚠</span>
           <div>

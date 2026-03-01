@@ -23,6 +23,29 @@ export async function GET(
   return NextResponse.json({ ...run, logs });
 }
 
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const body = await req.json();
+
+  if (body.action !== "cancel") {
+    return NextResponse.json({ error: "Unknown action" }, { status: 400 });
+  }
+
+  const [run] = await db.select().from(runs).where(eq(runs.id, id));
+  if (!run) {
+    return NextResponse.json({ error: "Run not found" }, { status: 404 });
+  }
+  if (run.status !== "running") {
+    return NextResponse.json({ error: "Run is not running" }, { status: 409 });
+  }
+
+  await db.update(runs).set({ status: "cancelled" }).where(eq(runs.id, id));
+  return NextResponse.json({ ok: true, status: "cancelled" });
+}
+
 export async function DELETE(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }

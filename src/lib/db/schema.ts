@@ -14,6 +14,7 @@ export const runStatusEnum = pgEnum("run_status", [
   "running",
   "completed",
   "failed",
+  "cancelled",
 ]);
 
 export const runs = pgTable("runs", {

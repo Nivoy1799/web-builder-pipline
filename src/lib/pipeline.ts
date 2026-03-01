@@ -10,6 +10,24 @@ type SendEvent = (
   data: Record<string, unknown>
 ) => void;
 
+export class PipelineCancelledError extends Error {
+  constructor() {
+    super("Pipeline cancelled");
+    this.name = "PipelineCancelledError";
+  }
+}
+
+async function checkCancelled(runId: string, sendEvent: SendEvent) {
+  const [row] = await db
+    .select({ status: runs.status })
+    .from(runs)
+    .where(eq(runs.id, runId));
+  if (row?.status === "cancelled") {
+    sendEvent("cancelled", { message: "Pipeline was cancelled" });
+    throw new PipelineCancelledError();
+  }
+}
+
 // Default model per agent — eval agents use Haiku (cheap), reasoning agents use Sonnet
 const DEFAULT_AGENT_MODELS: Record<string, ModelId> = {
   security: MODELS.haiku,
@@ -82,6 +100,7 @@ export async function runPipeline(
     }).where(eq(runs.id, runId));
   };
 
+  try {
   await updateRun(runId, { status: "running", currentStep: "security" }, sendEvent);
   await dbLog(runId, "ORCH", `Pipeline initiated for ${targetUrl}`, "info", sendEvent);
   await dbLog(runId, "ORCH", "Phase 1: Running 3 evaluation sub-agents in parallel", "info", sendEvent);
@@ -136,6 +155,9 @@ export async function runPipeline(
     ),
   ]);
 
+  // ── CANCELLATION CHECK 1: After parallel eval ──
+  await checkCancelled(runId, sendEvent);
+
   const successCount = [secData, codeData, viewData].filter(Boolean).length;
   if (successCount < 2) {
     await updateRun(runId, { status: "failed", error: `Only ${successCount}/3 sub-agents succeeded — need at least 2` }, sendEvent);
@@ -175,6 +197,9 @@ export async function runPipeline(
   sendEvent("output", { key: "merged", data: mergedEval });
   await dbLog(runId, "ORCH", `Merged: ${overallScore}/100 (Sec: ${mergedEval.scores.security}, Code: ${mergedEval.scores.code}, View: ${mergedEval.scores.view})`, "success", sendEvent);
 
+  // ── CANCELLATION CHECK 2: After merge, before crawler ──
+  await checkCancelled(runId, sendEvent);
+
   // ── PHASE 2: CRAWLER ─────────────────────────────────────────────────────
 
   const crawlerModel = agentModels.crawler ?? MODELS.sonnet;
@@ -202,6 +227,9 @@ export async function runPipeline(
   sendEvent("step", { step: "crawler", status: "done" });
   sendEvent("output", { key: "crawler", data: crawlResult });
   await dbLog(runId, "CRAWL", `Found: ${crawlResult.company_name} — ${crawlResult.industry}`, "success", sendEvent);
+
+  // ── CANCELLATION CHECK 3: After crawler, before planner ──
+  await checkCancelled(runId, sendEvent);
 
   // ── PHASE 3: PLANNER ─────────────────────────────────────────────────────
 
@@ -245,6 +273,9 @@ Max 4 sitemap pages.`,
   sendEvent("step", { step: "planner", status: "done" });
   sendEvent("output", { key: "planner", data: planResult });
   await dbLog(runId, "PLAN", `"${planResult.project_name}" — ${(planResult.sitemap as unknown[]).length} pages`, "success", sendEvent);
+
+  // ── CANCELLATION CHECK 4: After planner, before generator ──
+  await checkCancelled(runId, sendEvent);
 
   // ── PHASE 4: GENERATOR ───────────────────────────────────────────────────
 
@@ -343,4 +374,13 @@ Build an AWARD-WINNING, complete, production-ready HTML document. This should lo
     estimatedCostUsd: totalCostUnits,
     costDisplay: formatCost(totalCostUnits),
   });
+
+  } catch (err) {
+    if (err instanceof PipelineCancelledError) {
+      await updateRun(runId, { currentStep: null }, sendEvent);
+      await dbLog(runId, "ORCH", "Pipeline cancelled by user", "warn", sendEvent);
+      return;
+    }
+    throw err;
+  }
 }
