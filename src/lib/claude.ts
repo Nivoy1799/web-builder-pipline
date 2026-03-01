@@ -37,12 +37,15 @@ export function formatCost(costUnits: number): string {
   return `$${dollars.toFixed(2)}`;
 }
 
+export type ProgressCallback = (info: { chars: number; outputTokens: number }) => void;
+
 export async function callClaude(
   system: string,
   userMessage: string,
   useSearch = true,
   maxTokens = 8192,
-  model: ModelId = DEFAULT_MODEL
+  model: ModelId = DEFAULT_MODEL,
+  onProgress?: ProgressCallback
 ): Promise<{ text: string; wasTruncated: boolean; usage: TokenUsage }> {
   const systemSnippet = system.slice(0, 60).replace(/\n/g, " ");
   console.log(
@@ -72,8 +75,22 @@ export async function callClaude(
           { type: "web_search_20250305", name: "web_search" },
         ];
       }
-      // Use streaming to avoid SDK timeout on long-running calls
+      // Use streaming to avoid SDK timeout and report progress
       const stream = client.messages.stream(params);
+      if (onProgress) {
+        let charCount = 0;
+        let tokenCount = 0;
+        let lastReport = 0;
+        stream.on("text", (text) => {
+          charCount += text.length;
+          tokenCount = Math.ceil(charCount / 4); // rough estimate until final
+          const now = Date.now();
+          if (now - lastReport > 2000) { // report every 2s
+            lastReport = now;
+            onProgress({ chars: charCount, outputTokens: tokenCount });
+          }
+        });
+      }
       response = await stream.finalMessage();
       break;
     } catch (err) {
@@ -222,7 +239,8 @@ export async function callClaudeJSON(
   userMessage: string,
   useSearch = true,
   retries = 1,
-  model: ModelId = DEFAULT_MODEL
+  model: ModelId = DEFAULT_MODEL,
+  onProgress?: ProgressCallback
 ): Promise<{ result: Record<string, unknown>; wasTruncated: boolean; repaired: boolean; usage: TokenUsage }> {
   let msg = userMessage;
   const accUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
@@ -232,7 +250,8 @@ export async function callClaudeJSON(
       msg,
       useSearch,
       8192,
-      model
+      model,
+      onProgress
     );
     accUsage.inputTokens += usage.inputTokens;
     accUsage.outputTokens += usage.outputTokens;

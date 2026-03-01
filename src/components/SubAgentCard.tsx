@@ -2,12 +2,13 @@
 
 import { ScoreRing } from "./ScoreRing";
 
-export function SubAgentCard({ label, icon, color, status, score }: {
+export function SubAgentCard({ label, icon, color, status, score, progress }: {
   label: string;
   icon: string;
   color: string;
   status: string;
   score?: number | null;
+  progress?: { chars: number; outputTokens: number } | null;
 }) {
   return (
     <div style={{
@@ -28,7 +29,9 @@ export function SubAgentCard({ label, icon, color, status, score }: {
         fontSize: 9, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1,
         color: status === "done" ? "#22c55e" : status === "running" ? color : status === "error" ? "#ef4444" : "rgba(255,255,255,0.15)",
       }}>
-        {status === "running" ? "analyzing..." : status}
+        {status === "running" ? (
+          progress ? `${progress.chars.toLocaleString()} chars` : "analyzing..."
+        ) : status}
       </span>
     </div>
   );

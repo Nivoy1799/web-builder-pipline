@@ -1,11 +1,12 @@
 "use client";
 
-export function PipelineStep({ label, icon, color, status, isWide }: {
+export function PipelineStep({ label, icon, color, status, isWide, progress }: {
   label: string;
   icon: string;
   color: string;
   status: string;
   isWide?: boolean;
+  progress?: { chars: number; outputTokens: number } | null;
 }) {
   return (
     <div style={{
@@ -25,7 +26,9 @@ export function PipelineStep({ label, icon, color, status, isWide }: {
         fontSize: 9, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1,
         color: status === "done" ? "#22c55e" : status === "running" ? color : status === "error" ? "#ef4444" : "rgba(255,255,255,0.15)",
       }}>
-        {status === "running" ? "running..." : status}
+        {status === "running" ? (
+          progress ? `${progress.chars.toLocaleString()} chars` : "running..."
+        ) : status}
       </span>
     </div>
   );

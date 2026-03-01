@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import * as prompts from "@/prompts/index";
-import { callClaude, callClaudeJSON, parseHTML, calculateCostUnits, formatCost, MODELS, type TokenUsage, type ModelId } from "./claude";
+import { callClaude, callClaudeJSON, parseHTML, calculateCostUnits, formatCost, MODELS, type TokenUsage, type ModelId, type ProgressCallback } from "./claude";
 import { splitFiles } from "./splitFiles";
 import { db } from "./db";
 import { runs, runLogs } from "./db/schema";
@@ -120,7 +120,10 @@ export async function runPipeline(
     await dbLog(runId, logKey, `${label}: analyzing (${model})...`, "info", sendEvent);
 
     try {
-      const { result, repaired, usage } = await callClaudeJSON(prompt, userMsg, useSearch, 1, model);
+      const onProgress: ProgressCallback = ({ chars, outputTokens }) => {
+        sendEvent("progress", { step: key, chars, outputTokens });
+      };
+      const { result, repaired, usage } = await callClaudeJSON(prompt, userMsg, useSearch, 1, model, onProgress);
       await trackTokens(logKey, usage, model);
       if (repaired) await dbLog(runId, "ORCH", `${label} response truncated — auto-repaired`, "warn", sendEvent);
 
@@ -213,7 +216,8 @@ export async function runPipeline(
     `Research the company behind: ${targetUrl}\n\nSite title: "${(mergedEval.meta_info as Record<string, unknown>)?.title || "unknown"}"\nTech: ${(mergedEval.tech_stack as string[])?.join(", ") || "unknown"}\nScores — Sec: ${mergedEval.scores.security}, Code: ${mergedEval.scores.code}, Visual: ${mergedEval.scores.view}\n\nSearch broadly: website, social media, reviews, news.`,
     true,
     1,
-    crawlerModel
+    crawlerModel,
+    ({ chars, outputTokens }) => sendEvent("progress", { step: "crawler", chars, outputTokens })
   );
   await trackTokens("CRAWL", crawlUsage, crawlerModel);
   if (crawlRepaired) await dbLog(runId, "ORCH", "Crawler response truncated — auto-repaired", "warn", sendEvent);
@@ -259,7 +263,8 @@ Target scores: Sec ${Math.min(95, mergedEval.scores.security + 20)}+, Code ${Mat
 Max 4 sitemap pages.`,
     false,
     1,
-    plannerModel
+    plannerModel,
+    ({ chars, outputTokens }) => sendEvent("progress", { step: "planner", chars, outputTokens })
   );
   await trackTokens("PLAN", planUsage, plannerModel);
   if (planRepaired) await dbLog(runId, "ORCH", "Planner response truncated — auto-repaired", "warn", sendEvent);
@@ -337,7 +342,8 @@ IMAGES (use these exact URLs in <img> tags):
 Build an AWARD-WINNING, complete, production-ready HTML document. This should look like a $30k agency build. Use the REAL images above — do not invent image URLs.`,
     false,
     32000,
-    generatorModel
+    generatorModel,
+    ({ chars, outputTokens }) => sendEvent("progress", { step: "generator", chars, outputTokens })
   );
 
   await trackTokens("GEN", genUsage, generatorModel);

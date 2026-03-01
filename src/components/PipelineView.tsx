@@ -107,6 +107,7 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
   const [cancelled, setCancelled] = useState(initialRun.status === "cancelled");
   const [error, setError] = useState<string | null>(initialRun.error || null);
   const [cancelling, setCancelling] = useState(false);
+  const [progress, setProgress] = useState<Record<string, { chars: number; outputTokens: number }>>({});
   const [showPreview, setShowPreview] = useState(isAlreadyDone && !!initialRun.generatedHtml);
   const [origIframeFailed, setOrigIframeFailed] = useState(false);
   const [tokens, setTokens] = useState({
@@ -152,6 +153,11 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
     es.addEventListener("output", (e) => {
       const d = JSON.parse(e.data);
       setOutputs((prev) => ({ ...prev, [d.key]: d.data }));
+    });
+
+    es.addEventListener("progress", (e) => {
+      const d = JSON.parse(e.data);
+      setProgress((prev) => ({ ...prev, [d.step]: { chars: d.chars, outputTokens: d.outputTokens } }));
     });
 
     es.addEventListener("tokens", (e) => {
@@ -427,17 +433,17 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
               Evaluation Agents
             </div>
             <div style={{ display: "flex", gap: 4 }}>
-              <SubAgentCard label="Security" icon="🛡" color="#ef4444" status={statuses.security} score={(sec?.overall_score as number) ?? null} />
-              <SubAgentCard label="Code" icon="⚙" color="#f59e0b" status={statuses.code} score={(cod?.overall_score as number) ?? null} />
-              <SubAgentCard label="View" icon="◈" color="#3b82f6" status={statuses.view} score={(viw?.overall_score as number) ?? null} />
+              <SubAgentCard label="Security" icon="🛡" color="#ef4444" status={statuses.security} score={(sec?.overall_score as number) ?? null} progress={progress.security} />
+              <SubAgentCard label="Code" icon="⚙" color="#f59e0b" status={statuses.code} score={(cod?.overall_score as number) ?? null} progress={progress.code} />
+              <SubAgentCard label="View" icon="◈" color="#3b82f6" status={statuses.view} score={(viw?.overall_score as number) ?? null} progress={progress.view} />
             </div>
           </div>
           <Arrow active={statuses.merge === "done"} />
-          <PipelineStepUI label="Crawler" icon="⛏" color="#a78bfa" status={statuses.crawler} />
+          <PipelineStepUI label="Crawler" icon="⛏" color="#a78bfa" status={statuses.crawler} progress={progress.crawler} />
           <Arrow active={statuses.crawler === "done"} />
-          <PipelineStepUI label="Planner" icon="✎" color="#8b5cf6" status={statuses.planner} />
+          <PipelineStepUI label="Planner" icon="✎" color="#8b5cf6" status={statuses.planner} progress={progress.planner} />
           <Arrow active={statuses.planner === "done"} />
-          <PipelineStepUI label="Generator" icon="🔨" color="#22c55e" status={statuses.generator} isWide />
+          <PipelineStepUI label="Generator" icon="🔨" color="#22c55e" status={statuses.generator} isWide progress={progress.generator} />
         </div>
       </div>
 
