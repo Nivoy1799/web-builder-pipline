@@ -26,6 +26,7 @@ export default async function RunPage({
     id: run.id,
     url: run.url,
     status: run.status,
+    currentStep: run.currentStep,
     securityOutput: run.securityOutput,
     codeOutput: run.codeOutput,
     viewOutput: run.viewOutput,

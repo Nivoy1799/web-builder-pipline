@@ -22,6 +22,7 @@ interface PipelineViewProps {
     id: string;
     url: string;
     status: string;
+    currentStep?: string | null;
     securityOutput?: unknown;
     codeOutput?: unknown;
     viewOutput?: unknown;
@@ -51,7 +52,7 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
         Object.keys(INITIAL_STATUSES).map((k) => [k, "done"])
       ) as Record<PipelineStep, StepStatus>;
     }
-    if (initialRun.status === "failed" || initialRun.status === "cancelled") {
+    if (initialRun.status === "failed" || initialRun.status === "cancelled" || initialRun.status === "running") {
       const s = { ...INITIAL_STATUSES };
       // Mark steps with data as done
       if (initialRun.securityOutput) s.security = "done";
@@ -61,6 +62,17 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
       if (initialRun.crawlerOutput) s.crawler = "done";
       if (initialRun.plannerOutput) s.planner = "done";
       if (initialRun.generatedHtml) s.generator = "done";
+      // Mark current step as running (parallel eval agents share "security" step)
+      if (initialRun.status === "running" && initialRun.currentStep) {
+        const step = initialRun.currentStep as PipelineStep;
+        if (step === "security") {
+          if (s.security !== "done") s.security = "running";
+          if (s.code !== "done") s.code = "running";
+          if (s.view !== "done") s.view = "running";
+        } else if (step in s && s[step] !== "done") {
+          s[step] = "running";
+        }
+      }
       return s;
     }
     return { ...INITIAL_STATUSES };
@@ -155,6 +167,67 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
     es.addEventListener("cancelled", () => {
       setCancelled(true);
       setRunning(false);
+    });
+
+    // Sync event: polling updates when reconnecting to a running pipeline
+    es.addEventListener("sync", (e) => {
+      const d = JSON.parse(e.data);
+      // Rebuild step statuses from DB snapshot
+      const s = { ...INITIAL_STATUSES };
+      if (d.securityOutput) s.security = "done";
+      if (d.codeOutput) s.code = "done";
+      if (d.viewOutput) s.view = "done";
+      if (d.mergedOutput) s.merge = "done";
+      if (d.crawlerOutput) s.crawler = "done";
+      if (d.plannerOutput) s.planner = "done";
+      if (d.generatedHtml) s.generator = "done";
+      if (d.status === "running" && d.currentStep) {
+        const step = d.currentStep as PipelineStep;
+        if (step === "security") {
+          if (s.security !== "done") s.security = "running";
+          if (s.code !== "done") s.code = "running";
+          if (s.view !== "done") s.view = "running";
+        } else if (step in s && s[step] !== "done") {
+          s[step] = "running";
+        }
+      }
+      setStatuses(s);
+      // Update outputs
+      const o: Record<string, unknown> = {};
+      if (d.securityOutput) o.security = d.securityOutput;
+      if (d.codeOutput) o.code = d.codeOutput;
+      if (d.viewOutput) o.view = d.viewOutput;
+      if (d.mergedOutput) o.merged = d.mergedOutput;
+      if (d.crawlerOutput) o.crawler = d.crawlerOutput;
+      if (d.plannerOutput) o.planner = d.plannerOutput;
+      setOutputs((prev) => ({ ...prev, ...o }));
+      // Update tokens
+      if (d.totalTokens > 0) {
+        setTokens({
+          inputTokens: d.totalInputTokens || 0,
+          outputTokens: d.totalOutputTokens || 0,
+          totalTokens: d.totalTokens || 0,
+          estimatedCostUsd: d.estimatedCostUsd || 0,
+        });
+      }
+      // Handle terminal states from polling
+      if (d.status === "completed") {
+        setDone(true);
+        setRunning(false);
+        setShowPreview(true);
+        fetch(`/api/runs/${runId}`)
+          .then((r) => r.json())
+          .then((run) => {
+            if (run.files) setOutputs((prev) => ({ ...prev, _files: run.files }));
+            if (run.generatedHtml) setOutputs((prev) => ({ ...prev, generator: run.generatedHtml }));
+          });
+      } else if (d.status === "failed") {
+        setError("Pipeline failed");
+        setRunning(false);
+      } else if (d.status === "cancelled") {
+        setCancelled(true);
+        setRunning(false);
+      }
     });
 
     es.addEventListener("status", (e) => {

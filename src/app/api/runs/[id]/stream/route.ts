@@ -40,16 +40,52 @@ export async function GET(
     });
   }
 
-  // If already running, don't start a second pipeline
+  // If already running, poll for updates instead of starting a second pipeline
   if (run.status === "running") {
     const stream = new ReadableStream({
-      start(controller) {
-        controller.enqueue(
-          encoder.encode(
-            `event: error\ndata: ${JSON.stringify({ message: "Pipeline already in progress" })}\n\n`
-          )
-        );
-        controller.close();
+      async start(controller) {
+        const send = (event: string, data: unknown) => {
+          try {
+            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+          } catch { /* closed */ }
+        };
+
+        // Send initial snapshot so the UI can show current progress
+        send("running", { status: "running", currentStep: run.currentStep });
+
+        // Poll DB every 3s until pipeline finishes
+        const poll = setInterval(async () => {
+          try {
+            const [latest] = await db.select().from(runs).where(eq(runs.id, id));
+            if (!latest) { clearInterval(poll); controller.close(); return; }
+
+            send("sync", {
+              status: latest.status,
+              currentStep: latest.currentStep,
+              securityOutput: latest.securityOutput,
+              codeOutput: latest.codeOutput,
+              viewOutput: latest.viewOutput,
+              mergedOutput: latest.mergedOutput,
+              crawlerOutput: latest.crawlerOutput,
+              plannerOutput: latest.plannerOutput,
+              generatedHtml: !!latest.generatedHtml,
+              scoreOverall: latest.scoreOverall,
+              totalInputTokens: latest.totalInputTokens,
+              totalOutputTokens: latest.totalOutputTokens,
+              totalTokens: latest.totalTokens,
+              estimatedCostUsd: latest.estimatedCostUsd,
+            });
+
+            if (latest.status !== "running") {
+              clearInterval(poll);
+              send("done", { status: latest.status, scoreOverall: latest.scoreOverall });
+              controller.close();
+            }
+          } catch {
+            clearInterval(poll);
+            try { controller.close(); } catch { /* already closed */ }
+          }
+        }, 3000);
       },
     });
     return new Response(stream, {
