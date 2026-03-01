@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import * as prompts from "@/prompts/index";
-import { callClaude, callClaudeJSON, parseHTML, calculateCostUnits, formatCost, type TokenUsage } from "./claude";
+import { callClaude, callClaudeJSON, parseHTML, calculateCostUnits, formatCost, MODELS, type TokenUsage, type ModelId } from "./claude";
 import { splitFiles } from "./splitFiles";
 import { db } from "./db";
 import { runs, runLogs } from "./db/schema";
@@ -9,6 +9,16 @@ type SendEvent = (
   event: string,
   data: Record<string, unknown>
 ) => void;
+
+// Default model per agent — eval agents use Haiku (cheap), reasoning agents use Sonnet
+const DEFAULT_AGENT_MODELS: Record<string, ModelId> = {
+  security: MODELS.haiku,
+  code: MODELS.haiku,
+  view: MODELS.haiku,
+  crawler: MODELS.sonnet,
+  planner: MODELS.sonnet,
+  generator: MODELS.sonnet,
+};
 
 async function dbLog(
   runId: string,
@@ -42,33 +52,41 @@ export async function runPipeline(
 
   const targetUrl = run.url;
 
-  const tokenTotals: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  // Merge per-run config overrides (from DB) over defaults
+  const runConfig = (run as Record<string, unknown>).config as Record<string, string> | null;
+  const agentModels: Record<string, ModelId> = { ...DEFAULT_AGENT_MODELS };
+  if (runConfig?.models) {
+    Object.assign(agentModels, runConfig.models);
+  }
 
-  const trackTokens = async (agent: string, usage: TokenUsage) => {
+  const tokenTotals: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  let totalCostUnits = 0;
+
+  const trackTokens = async (agent: string, usage: TokenUsage, model: ModelId) => {
     tokenTotals.inputTokens += usage.inputTokens;
     tokenTotals.outputTokens += usage.outputTokens;
     tokenTotals.totalTokens += usage.totalTokens;
-    const costUnits = calculateCostUnits(tokenTotals);
+    totalCostUnits += calculateCostUnits(usage, model);
     sendEvent("tokens", {
       agent,
       call: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens },
       cumulative: { ...tokenTotals },
-      estimatedCostUsd: costUnits,
-      costDisplay: formatCost(costUnits),
+      estimatedCostUsd: totalCostUnits,
+      costDisplay: formatCost(totalCostUnits),
     });
     await db.update(runs).set({
       totalInputTokens: tokenTotals.inputTokens,
       totalOutputTokens: tokenTotals.outputTokens,
       totalTokens: tokenTotals.totalTokens,
-      estimatedCostUsd: costUnits,
+      estimatedCostUsd: totalCostUnits,
     }).where(eq(runs.id, runId));
   };
 
   await updateRun(runId, { status: "running", currentStep: "security" }, sendEvent);
   await dbLog(runId, "ORCH", `Pipeline initiated for ${targetUrl}`, "info", sendEvent);
-  await dbLog(runId, "ORCH", "Phase 1: Running 3 evaluation sub-agents sequentially", "info", sendEvent);
+  await dbLog(runId, "ORCH", "Phase 1: Running 3 evaluation sub-agents in parallel", "info", sendEvent);
 
-  // ── PHASE 1: SEQUENTIAL EVALUATION ───────────────────────────────────────
+  // ── PHASE 1: PARALLEL EVALUATION ──────────────────────────────────────
 
   const runAgent = async (
     key: string,
@@ -78,13 +96,13 @@ export async function runPipeline(
     userMsg: string,
     useSearch = true
   ): Promise<Record<string, unknown> | null> => {
-    await updateRun(runId, { currentStep: key }, sendEvent);
+    const model = agentModels[key] ?? MODELS.sonnet;
     sendEvent("step", { step: key, status: "running" });
-    await dbLog(runId, logKey, `${label}: analyzing...`, "info", sendEvent);
+    await dbLog(runId, logKey, `${label}: analyzing (${model})...`, "info", sendEvent);
 
     try {
-      const { result, repaired, usage } = await callClaudeJSON(prompt, userMsg, useSearch);
-      await trackTokens(logKey, usage);
+      const { result, repaired, usage } = await callClaudeJSON(prompt, userMsg, useSearch, 1, model);
+      await trackTokens(logKey, usage, model);
       if (repaired) await dbLog(runId, "ORCH", `${label} response truncated — auto-repaired`, "warn", sendEvent);
 
       const outputField = `${key}Output` as keyof typeof runs;
@@ -100,23 +118,23 @@ export async function runPipeline(
     }
   };
 
-  const secData = await runAgent(
-    "security", "Security", "SEC", prompts.security,
-    `Perform a security audit of: ${targetUrl}\n\nExamine HTTPS, headers, cookies, forms, and third-party scripts. Cite specific evidence.`,
-    true
-  );
-
-  const codeData = await runAgent(
-    "code", "Code", "CODE", prompts.code,
-    `Analyze code quality of: ${targetUrl}\n\nExamine HTML structure, meta tags, performance signals, accessibility attributes, responsive patterns. Cite specific elements.`,
-    true
-  );
-
-  const viewData = await runAgent(
-    "view", "Visual", "VIEW", prompts.view,
-    `Evaluate the visual design and UX of: ${targetUrl}\n\nAnalyze layout, typography, colors, navigation, CTAs, spacing, and overall polish. Describe specific visual evidence.`,
-    true
-  );
+  const [secData, codeData, viewData] = await Promise.all([
+    runAgent(
+      "security", "Security", "SEC", prompts.security,
+      `Perform a security audit of: ${targetUrl}\n\nExamine HTTPS, headers, cookies, forms, and third-party scripts. Cite specific evidence.`,
+      true
+    ),
+    runAgent(
+      "code", "Code", "CODE", prompts.code,
+      `Analyze code quality of: ${targetUrl}\n\nExamine HTML structure, meta tags, performance signals, accessibility attributes, responsive patterns. Cite specific elements.`,
+      true
+    ),
+    runAgent(
+      "view", "Visual", "VIEW", prompts.view,
+      `Evaluate the visual design and UX of: ${targetUrl}\n\nAnalyze layout, typography, colors, navigation, CTAs, spacing, and overall polish. Describe specific visual evidence.`,
+      true
+    ),
+  ]);
 
   const successCount = [secData, codeData, viewData].filter(Boolean).length;
   if (successCount < 2) {
@@ -159,17 +177,20 @@ export async function runPipeline(
 
   // ── PHASE 2: CRAWLER ─────────────────────────────────────────────────────
 
+  const crawlerModel = agentModels.crawler ?? MODELS.sonnet;
   await dbLog(runId, "ORCH", "Phase 2: Starting Crawler", "info", sendEvent);
   await updateRun(runId, { currentStep: "crawler" }, sendEvent);
   sendEvent("step", { step: "crawler", status: "running" });
-  await dbLog(runId, "CRAWL", `Researching company behind ${targetUrl}...`, "info", sendEvent);
+  await dbLog(runId, "CRAWL", `Researching company behind ${targetUrl} (${crawlerModel})...`, "info", sendEvent);
 
   const { result: crawlResult, repaired: crawlRepaired, usage: crawlUsage } = await callClaudeJSON(
     prompts.crawler,
     `Research the company behind: ${targetUrl}\n\nSite title: "${(mergedEval.meta_info as Record<string, unknown>)?.title || "unknown"}"\nTech: ${(mergedEval.tech_stack as string[])?.join(", ") || "unknown"}\nScores — Sec: ${mergedEval.scores.security}, Code: ${mergedEval.scores.code}, Visual: ${mergedEval.scores.view}\n\nSearch broadly: website, social media, reviews, news.`,
-    true
+    true,
+    1,
+    crawlerModel
   );
-  await trackTokens("CRAWL", crawlUsage);
+  await trackTokens("CRAWL", crawlUsage, crawlerModel);
   if (crawlRepaired) await dbLog(runId, "ORCH", "Crawler response truncated — auto-repaired", "warn", sendEvent);
   if (!crawlResult.company_name) {
     await updateRun(runId, { status: "failed", error: "Crawler could not identify the company" }, sendEvent);
@@ -184,10 +205,11 @@ export async function runPipeline(
 
   // ── PHASE 3: PLANNER ─────────────────────────────────────────────────────
 
+  const plannerModel = agentModels.planner ?? MODELS.sonnet;
   await dbLog(runId, "ORCH", "Phase 3: Starting Planner", "info", sendEvent);
   await updateRun(runId, { currentStep: "planner" }, sendEvent);
   sendEvent("step", { step: "planner", status: "running" });
-  await dbLog(runId, "PLAN", "Designing improvement strategy...", "info", sendEvent);
+  await dbLog(runId, "PLAN", `Designing improvement strategy (${plannerModel})...`, "info", sendEvent);
 
   const { result: planResult, repaired: planRepaired, usage: planUsage } = await callClaudeJSON(
     prompts.planner,
@@ -207,9 +229,11 @@ Brand: ${crawlResult.brand_voice}
 
 Target scores: Sec ${Math.min(95, mergedEval.scores.security + 20)}+, Code ${Math.min(95, mergedEval.scores.code + 20)}+, Visual ${Math.min(95, mergedEval.scores.view + 20)}+
 Max 4 sitemap pages.`,
-    false
+    false,
+    1,
+    plannerModel
   );
-  await trackTokens("PLAN", planUsage);
+  await trackTokens("PLAN", planUsage, plannerModel);
   if (planRepaired) await dbLog(runId, "ORCH", "Planner response truncated — auto-repaired", "warn", sendEvent);
   if (!planResult.design_system || !(planResult.sitemap as unknown[])?.length) {
     await updateRun(runId, { status: "failed", error: "Planner missing required fields" }, sendEvent);
@@ -224,10 +248,11 @@ Max 4 sitemap pages.`,
 
   // ── PHASE 4: GENERATOR ───────────────────────────────────────────────────
 
+  const generatorModel = agentModels.generator ?? MODELS.sonnet;
   await dbLog(runId, "ORCH", "Phase 4: Starting Generator", "info", sendEvent);
   await updateRun(runId, { currentStep: "generator" }, sendEvent);
   sendEvent("step", { step: "generator", status: "running" });
-  await dbLog(runId, "GEN", "Building the new website...", "info", sendEvent);
+  await dbLog(runId, "GEN", `Building the new website (${generatorModel})...`, "info", sendEvent);
 
   const ds = planResult.design_system as Record<string, unknown>;
   const cs = planResult.content_strategy as Record<string, unknown>;
@@ -280,10 +305,11 @@ IMAGES (use these exact URLs in <img> tags):
 
 Build an AWARD-WINNING, complete, production-ready HTML document. This should look like a $30k agency build. Use the REAL images above — do not invent image URLs.`,
     false,
-    32000
+    32000,
+    generatorModel
   );
 
-  await trackTokens("GEN", genUsage);
+  await trackTokens("GEN", genUsage, generatorModel);
 
   const html = parseHTML(genRaw);
   if (html.length < 500) {
@@ -310,12 +336,11 @@ Build an AWARD-WINNING, complete, production-ready HTML document. This should lo
   );
 
   await dbLog(runId, "ORCH", "Pipeline complete!", "success", sendEvent);
-  const finalCostUnits = calculateCostUnits(tokenTotals);
   sendEvent("complete", {
     scoreOverall: overallScore,
     files: Object.keys(files),
     tokens: { ...tokenTotals },
-    estimatedCostUsd: finalCostUnits,
-    costDisplay: formatCost(finalCostUnits),
+    estimatedCostUsd: totalCostUnits,
+    costDisplay: formatCost(totalCostUnits),
   });
 }

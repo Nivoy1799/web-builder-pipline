@@ -1,6 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
 
-const MODEL = "claude-sonnet-4-20250514";
+export const MODELS = {
+  sonnet: "claude-sonnet-4-20250514",
+  haiku: "claude-haiku-4-5-20251001",
+} as const;
+
+export type ModelId = (typeof MODELS)[keyof typeof MODELS];
+
+const DEFAULT_MODEL = MODELS.sonnet;
 
 const client = new Anthropic();
 
@@ -10,11 +17,17 @@ export type TokenUsage = {
   totalTokens: number;
 };
 
+// Cost rates per million tokens
+const MODEL_COSTS: Record<string, { input: number; output: number }> = {
+  [MODELS.sonnet]: { input: 3.0, output: 12.0 },
+  [MODELS.haiku]: { input: 0.8, output: 4.0 },
+};
+
 // Cost in 1/10000 dollar units (e.g. 50 = $0.005)
-// Claude Sonnet 4: $3/M input, $12/M output
-export function calculateCostUnits(usage: TokenUsage): number {
-  const inputCost = (usage.inputTokens / 1_000_000) * 3.0;
-  const outputCost = (usage.outputTokens / 1_000_000) * 12.0;
+export function calculateCostUnits(usage: TokenUsage, model: ModelId = DEFAULT_MODEL): number {
+  const rates = MODEL_COSTS[model] ?? MODEL_COSTS[DEFAULT_MODEL];
+  const inputCost = (usage.inputTokens / 1_000_000) * rates.input;
+  const outputCost = (usage.outputTokens / 1_000_000) * rates.output;
   return Math.round((inputCost + outputCost) * 10_000);
 }
 
@@ -28,11 +41,12 @@ export async function callClaude(
   system: string,
   userMessage: string,
   useSearch = true,
-  maxTokens = 8192
+  maxTokens = 8192,
+  model: ModelId = DEFAULT_MODEL
 ): Promise<{ text: string; wasTruncated: boolean; usage: TokenUsage }> {
   const systemSnippet = system.slice(0, 60).replace(/\n/g, " ");
   console.log(
-    `→ API ${MODEL} search:${useSearch} max:${maxTokens} — "${systemSnippet}…"`
+    `→ API ${model} search:${useSearch} max:${maxTokens} — "${systemSnippet}…"`
   );
 
   const MAX_RATE_RETRIES = 3;
@@ -42,9 +56,15 @@ export async function callClaude(
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const params: any = {
-        model: MODEL,
+        model,
         max_tokens: maxTokens,
-        system,
+        system: [
+          {
+            type: "text",
+            text: system,
+            cache_control: { type: "ephemeral" },
+          },
+        ],
         messages: [{ role: "user", content: userMessage }],
       };
       if (useSearch) {
@@ -77,8 +97,13 @@ export async function callClaude(
     .map((b) => b.text)
     .join("\n");
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const usageAny = response.usage as any;
+  const cacheInfo = usageAny.cache_read_input_tokens
+    ? ` cache_read:${usageAny.cache_read_input_tokens}`
+    : "";
   console.log(
-    `✓ tokens in:${response.usage.input_tokens} out:${response.usage.output_tokens} stop:${response.stop_reason}`
+    `✓ tokens in:${response.usage.input_tokens} out:${response.usage.output_tokens}${cacheInfo} stop:${response.stop_reason}`
   );
 
   const usage: TokenUsage = {
@@ -150,7 +175,8 @@ export async function callClaudeJSON(
   system: string,
   userMessage: string,
   useSearch = true,
-  retries = 1
+  retries = 1,
+  model: ModelId = DEFAULT_MODEL
 ): Promise<{ result: Record<string, unknown>; wasTruncated: boolean; repaired: boolean; usage: TokenUsage }> {
   let msg = userMessage;
   const accUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
@@ -159,7 +185,8 @@ export async function callClaudeJSON(
       system,
       msg,
       useSearch,
-      8192
+      8192,
+      model
     );
     accUsage.inputTokens += usage.inputTokens;
     accUsage.outputTokens += usage.outputTokens;
@@ -194,4 +221,3 @@ export function parseHTML(text: string): string {
   if (clean.includes("<head") || clean.includes("<body")) return clean;
   throw new Error("No HTML found in response");
 }
-

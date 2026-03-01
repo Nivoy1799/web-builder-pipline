@@ -34,6 +34,7 @@ export const runs = pgTable("runs", {
   totalOutputTokens: integer("total_output_tokens").notNull().default(0),
   totalTokens: integer("total_tokens").notNull().default(0),
   estimatedCostUsd: integer("estimated_cost_usd").notNull().default(0),
+  config: jsonb("config"),
   error: text("error"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()

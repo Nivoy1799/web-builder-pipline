@@ -15,6 +15,13 @@
       "when": 1772378408590,
       "tag": "0001_flawless_goblin_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1772379749505,
+      "tag": "0002_sweet_the_executioner",
+      "breakpoints": true
     }
   ]
 }
