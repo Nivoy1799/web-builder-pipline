@@ -116,28 +116,43 @@ export async function callClaude(
 }
 
 export function repairJSON(str: string): unknown {
+  // Stage 1: Direct parse
   try {
     return JSON.parse(str);
   } catch {}
 
+  // Strip markdown fences and trim
   let s = str.replace(/```json|```/g, "").trim();
   const start = s.indexOf("{");
   if (start === -1) throw new Error("No JSON object found");
   s = s.slice(start);
+
+  // Stage 2: Direct parse after cleanup
   try {
     return JSON.parse(s);
   } catch {}
 
+  // Stage 3: Extract balanced JSON object (ignore trailing text)
+  const extracted = extractBalancedObject(s);
+  if (extracted) {
+    try {
+      return JSON.parse(extracted);
+    } catch {}
+  }
+
+  // Stage 4: Repair truncated / malformed JSON
+  let r = extracted || s;
+
   // Remove trailing incomplete key-value pairs
-  s = s.replace(/,\s*"[^"]*"?\s*:?\s*("?[^"{}[\]]*)?$/, "");
-  s = s.replace(/,\s*$/, "").replace(/,\s*"[^"]*$/, "");
+  r = r.replace(/,\s*"[^"]*"?\s*:?\s*("?[^"{}[\]]*)?$/, "");
+  r = r.replace(/,\s*$/, "").replace(/,\s*"[^"]*$/, "");
 
   // Count and close open brackets
   let openB = 0,
     openK = 0,
     inStr = false,
     esc = false;
-  for (const ch of s) {
+  for (const ch of r) {
     if (esc) {
       esc = false;
       continue;
@@ -157,18 +172,47 @@ export function repairJSON(str: string): unknown {
     if (ch === "]") openK--;
   }
 
-  if (inStr) s += '"';
-  for (let i = 0; i < openK; i++) s += "]";
-  for (let i = 0; i < openB; i++) s += "}";
-  s = s.replace(/,(\s*[}\]])/g, "$1");
+  if (inStr) r += '"';
+  for (let i = 0; i < openK; i++) r += "]";
+  for (let i = 0; i < openB; i++) r += "}";
+  r = r.replace(/,(\s*[}\]])/g, "$1");
 
   try {
-    return JSON.parse(s);
+    return JSON.parse(r);
   } catch (e) {
     throw new Error(
       `JSON repair failed: ${e instanceof Error ? e.message : e}`
     );
   }
+}
+
+/** Walk from the opening `{` and return the substring up to its matching `}`, ignoring trailing content. */
+function extractBalancedObject(s: string): string | null {
+  let depth = 0,
+    inStr = false,
+    esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (esc) {
+      esc = false;
+      continue;
+    }
+    if (ch === "\\") {
+      esc = true;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = !inStr;
+      continue;
+    }
+    if (inStr) continue;
+    if (ch === "{") depth++;
+    if (ch === "}") {
+      depth--;
+      if (depth === 0) return s.slice(0, i + 1);
+    }
+  }
+  return null; // unbalanced — let the repair stage handle it
 }
 
 export async function callClaudeJSON(
