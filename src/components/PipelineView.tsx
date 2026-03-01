@@ -31,6 +31,10 @@ interface PipelineViewProps {
     generatedHtml?: string | null;
     files?: Record<string, string> | null;
     scoreOverall?: number | null;
+    totalInputTokens?: number;
+    totalOutputTokens?: number;
+    totalTokens?: number;
+    estimatedCostUsd?: number;
     error?: string | null;
     logs?: Array<{ agent: string; level: string; message: string; createdAt: string }>;
   };
@@ -91,6 +95,12 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
   const [error, setError] = useState<string | null>(initialRun.error || null);
   const [showPreview, setShowPreview] = useState(isAlreadyDone && !!initialRun.generatedHtml);
   const [origIframeFailed, setOrigIframeFailed] = useState(false);
+  const [tokens, setTokens] = useState({
+    inputTokens: initialRun.totalInputTokens || 0,
+    outputTokens: initialRun.totalOutputTokens || 0,
+    totalTokens: initialRun.totalTokens || 0,
+    estimatedCostUsd: initialRun.estimatedCostUsd || 0,
+  });
 
   const logRef = useRef<HTMLDivElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -98,6 +108,12 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
 
   const ts = () =>
     new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+  const formatCostDisplay = (costUnits: number) => {
+    const dollars = costUnits / 10_000;
+    if (dollars < 0.01) return `$${dollars.toFixed(4)}`;
+    return `$${dollars.toFixed(2)}`;
+  };
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -122,6 +138,16 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
     es.addEventListener("output", (e) => {
       const d = JSON.parse(e.data);
       setOutputs((prev) => ({ ...prev, [d.key]: d.data }));
+    });
+
+    es.addEventListener("tokens", (e) => {
+      const d = JSON.parse(e.data);
+      setTokens({
+        inputTokens: d.cumulative.inputTokens,
+        outputTokens: d.cumulative.outputTokens,
+        totalTokens: d.cumulative.totalTokens,
+        estimatedCostUsd: d.estimatedCostUsd,
+      });
     });
 
     es.addEventListener("status", (e) => {
@@ -215,6 +241,12 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
       company: outputs.crawler,
       plan: outputs.planner,
       html_length: (outputs.generator as string)?.length,
+      tokens: {
+        input: tokens.inputTokens,
+        output: tokens.outputTokens,
+        total: tokens.totalTokens,
+        estimatedCost: formatCostDisplay(tokens.estimatedCostUsd),
+      },
     };
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
@@ -285,6 +317,31 @@ export function PipelineView({ runId, initialRun }: PipelineViewProps) {
           <PipelineStepUI label="Generator" icon="🔨" color="#22c55e" status={statuses.generator} isWide />
         </div>
       </div>
+
+      {/* TOKEN / COST BAR */}
+      {tokens.totalTokens > 0 && (
+        <div style={{
+          marginBottom: 12, padding: "6px 12px", borderRadius: 8,
+          background: "rgba(255,255,255,0.015)", border: "1px solid rgba(255,255,255,0.04)",
+          display: "flex", alignItems: "center", gap: 16, fontSize: 10, fontFamily: "var(--mono)",
+          animation: "fadeIn 0.3s ease",
+        }}>
+          <span style={{ color: "rgba(255,255,255,0.2)", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1.5, fontSize: 9 }}>Tokens</span>
+          <span style={{ color: "rgba(255,255,255,0.35)" }}>
+            <span style={{ color: "rgba(139,92,246,0.7)" }}>{tokens.inputTokens.toLocaleString()}</span> in
+          </span>
+          <span style={{ color: "rgba(255,255,255,0.35)" }}>
+            <span style={{ color: "rgba(59,130,246,0.7)" }}>{tokens.outputTokens.toLocaleString()}</span> out
+          </span>
+          <span style={{ color: "rgba(255,255,255,0.15)" }}>|</span>
+          <span style={{ color: "rgba(255,255,255,0.35)" }}>
+            {tokens.totalTokens.toLocaleString()} total
+          </span>
+          <span style={{ marginLeft: "auto", color: "#22c55e", fontWeight: 600 }}>
+            {formatCostDisplay(tokens.estimatedCostUsd)}
+          </span>
+        </div>
+      )}
 
       {/* MAIN CONTENT: LOG + OUTPUTS */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, animation: "fadeIn 0.3s ease 0.15s both" }}>

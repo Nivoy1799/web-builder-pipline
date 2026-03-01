@@ -128,6 +128,13 @@ export default async function RunsPage() {
                 </span>
               )}
 
+              {/* Cost */}
+              {run.estimatedCostUsd > 0 && (
+                <span style={{ fontSize: 9, fontFamily: "var(--mono)", color: "rgba(34,197,94,0.6)" }}>
+                  ${(run.estimatedCostUsd / 10_000).toFixed(2)}
+                </span>
+              )}
+
               {/* Error preview */}
               {run.error && (
                 <span style={{ fontSize: 9, color: "rgba(239,68,68,0.6)", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>

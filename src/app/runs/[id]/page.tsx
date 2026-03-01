@@ -35,6 +35,10 @@ export default async function RunPage({
     generatedHtml: run.generatedHtml,
     files: run.files as Record<string, string> | null,
     scoreOverall: run.scoreOverall,
+    totalInputTokens: run.totalInputTokens,
+    totalOutputTokens: run.totalOutputTokens,
+    totalTokens: run.totalTokens,
+    estimatedCostUsd: run.estimatedCostUsd,
     error: run.error,
     logs: logs.map((l) => ({
       agent: l.agent,

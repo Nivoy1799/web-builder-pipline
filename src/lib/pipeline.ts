@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import * as prompts from "@/prompts/index";
-import { callClaude, callClaudeJSON, parseHTML } from "./claude";
+import { callClaude, callClaudeJSON, parseHTML, calculateCostUnits, formatCost, type TokenUsage } from "./claude";
 import { splitFiles } from "./splitFiles";
 import { db } from "./db";
 import { runs, runLogs } from "./db/schema";
@@ -42,6 +42,28 @@ export async function runPipeline(
 
   const targetUrl = run.url;
 
+  const tokenTotals: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+
+  const trackTokens = async (agent: string, usage: TokenUsage) => {
+    tokenTotals.inputTokens += usage.inputTokens;
+    tokenTotals.outputTokens += usage.outputTokens;
+    tokenTotals.totalTokens += usage.totalTokens;
+    const costUnits = calculateCostUnits(tokenTotals);
+    sendEvent("tokens", {
+      agent,
+      call: { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens },
+      cumulative: { ...tokenTotals },
+      estimatedCostUsd: costUnits,
+      costDisplay: formatCost(costUnits),
+    });
+    await db.update(runs).set({
+      totalInputTokens: tokenTotals.inputTokens,
+      totalOutputTokens: tokenTotals.outputTokens,
+      totalTokens: tokenTotals.totalTokens,
+      estimatedCostUsd: costUnits,
+    }).where(eq(runs.id, runId));
+  };
+
   await updateRun(runId, { status: "running", currentStep: "security" }, sendEvent);
   await dbLog(runId, "ORCH", `Pipeline initiated for ${targetUrl}`, "info", sendEvent);
   await dbLog(runId, "ORCH", "Phase 1: Running 3 evaluation sub-agents sequentially", "info", sendEvent);
@@ -61,7 +83,8 @@ export async function runPipeline(
     await dbLog(runId, logKey, `${label}: analyzing...`, "info", sendEvent);
 
     try {
-      const { result, repaired } = await callClaudeJSON(prompt, userMsg, useSearch);
+      const { result, repaired, usage } = await callClaudeJSON(prompt, userMsg, useSearch);
+      await trackTokens(logKey, usage);
       if (repaired) await dbLog(runId, "ORCH", `${label} response truncated — auto-repaired`, "warn", sendEvent);
 
       const outputField = `${key}Output` as keyof typeof runs;
@@ -141,11 +164,12 @@ export async function runPipeline(
   sendEvent("step", { step: "crawler", status: "running" });
   await dbLog(runId, "CRAWL", `Researching company behind ${targetUrl}...`, "info", sendEvent);
 
-  const { result: crawlResult, repaired: crawlRepaired } = await callClaudeJSON(
+  const { result: crawlResult, repaired: crawlRepaired, usage: crawlUsage } = await callClaudeJSON(
     prompts.crawler,
     `Research the company behind: ${targetUrl}\n\nSite title: "${(mergedEval.meta_info as Record<string, unknown>)?.title || "unknown"}"\nTech: ${(mergedEval.tech_stack as string[])?.join(", ") || "unknown"}\nScores — Sec: ${mergedEval.scores.security}, Code: ${mergedEval.scores.code}, Visual: ${mergedEval.scores.view}\n\nSearch broadly: website, social media, reviews, news.`,
     true
   );
+  await trackTokens("CRAWL", crawlUsage);
   if (crawlRepaired) await dbLog(runId, "ORCH", "Crawler response truncated — auto-repaired", "warn", sendEvent);
   if (!crawlResult.company_name) {
     await updateRun(runId, { status: "failed", error: "Crawler could not identify the company" }, sendEvent);
@@ -165,7 +189,7 @@ export async function runPipeline(
   sendEvent("step", { step: "planner", status: "running" });
   await dbLog(runId, "PLAN", "Designing improvement strategy...", "info", sendEvent);
 
-  const { result: planResult, repaired: planRepaired } = await callClaudeJSON(
+  const { result: planResult, repaired: planRepaired, usage: planUsage } = await callClaudeJSON(
     prompts.planner,
     `Create a CONCISE website improvement plan. Keep all values SHORT.
 
@@ -185,6 +209,7 @@ Target scores: Sec ${Math.min(95, mergedEval.scores.security + 20)}+, Code ${Mat
 Max 4 sitemap pages.`,
     false
   );
+  await trackTokens("PLAN", planUsage);
   if (planRepaired) await dbLog(runId, "ORCH", "Planner response truncated — auto-repaired", "warn", sendEvent);
   if (!planResult.design_system || !(planResult.sitemap as unknown[])?.length) {
     await updateRun(runId, { status: "failed", error: "Planner missing required fields" }, sendEvent);
@@ -210,7 +235,7 @@ Max 4 sitemap pages.`,
   const tp = ds?.typography as Record<string, unknown> | undefined;
   const images = crawlResult.images as Record<string, unknown> | undefined;
 
-  const { text: genRaw } = await callClaude(
+  const { text: genRaw, usage: genUsage } = await callClaude(
     prompts.generator,
     `Build a complete website:
 
@@ -258,6 +283,8 @@ Build an AWARD-WINNING, complete, production-ready HTML document. This should lo
     32000
   );
 
+  await trackTokens("GEN", genUsage);
+
   const html = parseHTML(genRaw);
   if (html.length < 500) {
     await updateRun(runId, { status: "failed", error: "Generated HTML too short" }, sendEvent);
@@ -283,8 +310,12 @@ Build an AWARD-WINNING, complete, production-ready HTML document. This should lo
   );
 
   await dbLog(runId, "ORCH", "Pipeline complete!", "success", sendEvent);
+  const finalCostUnits = calculateCostUnits(tokenTotals);
   sendEvent("complete", {
     scoreOverall: overallScore,
     files: Object.keys(files),
+    tokens: { ...tokenTotals },
+    estimatedCostUsd: finalCostUnits,
+    costDisplay: formatCost(finalCostUnits),
   });
 }

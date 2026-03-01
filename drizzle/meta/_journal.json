@@ -8,6 +8,13 @@
       "when": 1772268833265,
       "tag": "0000_charming_ezekiel",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1772378408590,
+      "tag": "0001_flawless_goblin_queen",
+      "breakpoints": true
     }
   ]
 }

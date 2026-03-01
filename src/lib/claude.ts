@@ -4,12 +4,32 @@ const MODEL = "claude-sonnet-4-20250514";
 
 const client = new Anthropic();
 
+export type TokenUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+
+// Cost in 1/10000 dollar units (e.g. 50 = $0.005)
+// Claude Sonnet 4: $3/M input, $12/M output
+export function calculateCostUnits(usage: TokenUsage): number {
+  const inputCost = (usage.inputTokens / 1_000_000) * 3.0;
+  const outputCost = (usage.outputTokens / 1_000_000) * 12.0;
+  return Math.round((inputCost + outputCost) * 10_000);
+}
+
+export function formatCost(costUnits: number): string {
+  const dollars = costUnits / 10_000;
+  if (dollars < 0.01) return `$${dollars.toFixed(4)}`;
+  return `$${dollars.toFixed(2)}`;
+}
+
 export async function callClaude(
   system: string,
   userMessage: string,
   useSearch = true,
   maxTokens = 8192
-): Promise<{ text: string; wasTruncated: boolean }> {
+): Promise<{ text: string; wasTruncated: boolean; usage: TokenUsage }> {
   const systemSnippet = system.slice(0, 60).replace(/\n/g, " ");
   console.log(
     `→ API ${MODEL} search:${useSearch} max:${maxTokens} — "${systemSnippet}…"`
@@ -61,7 +81,13 @@ export async function callClaude(
     `✓ tokens in:${response.usage.input_tokens} out:${response.usage.output_tokens} stop:${response.stop_reason}`
   );
 
-  return { text, wasTruncated: response.stop_reason === "max_tokens" };
+  const usage: TokenUsage = {
+    inputTokens: response.usage.input_tokens,
+    outputTokens: response.usage.output_tokens,
+    totalTokens: response.usage.input_tokens + response.usage.output_tokens,
+  };
+
+  return { text, wasTruncated: response.stop_reason === "max_tokens", usage };
 }
 
 export function repairJSON(str: string): unknown {
@@ -125,20 +151,25 @@ export async function callClaudeJSON(
   userMessage: string,
   useSearch = true,
   retries = 1
-): Promise<{ result: Record<string, unknown>; wasTruncated: boolean; repaired: boolean }> {
+): Promise<{ result: Record<string, unknown>; wasTruncated: boolean; repaired: boolean; usage: TokenUsage }> {
   let msg = userMessage;
+  const accUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const { text, wasTruncated } = await callClaude(
+    const { text, wasTruncated, usage } = await callClaude(
       system,
       msg,
       useSearch,
       8192
     );
+    accUsage.inputTokens += usage.inputTokens;
+    accUsage.outputTokens += usage.outputTokens;
+    accUsage.totalTokens += usage.totalTokens;
     try {
       return {
         result: repairJSON(text) as Record<string, unknown>,
         wasTruncated,
         repaired: wasTruncated,
+        usage: accUsage,
       };
     } catch (e) {
       if (attempt < retries) {

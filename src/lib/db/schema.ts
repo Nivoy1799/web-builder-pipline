@@ -30,6 +30,10 @@ export const runs = pgTable("runs", {
   generatedHtml: text("generated_html"),
   files: jsonb("files"),
   scoreOverall: integer("score_overall"),
+  totalInputTokens: integer("total_input_tokens").notNull().default(0),
+  totalOutputTokens: integer("total_output_tokens").notNull().default(0),
+  totalTokens: integer("total_tokens").notNull().default(0),
+  estimatedCostUsd: integer("estimated_cost_usd").notNull().default(0),
   error: text("error"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
