@@ -72,7 +72,9 @@ export async function callClaude(
           { type: "web_search_20250305", name: "web_search" },
         ];
       }
-      response = await client.messages.create(params);
+      // Use streaming to avoid SDK timeout on long-running calls
+      const stream = client.messages.stream(params);
+      response = await stream.finalMessage();
       break;
     } catch (err) {
       if (
